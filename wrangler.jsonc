@@ -9,9 +9,7 @@
 	"compatibility_date": "2025-04-26",
 	"migrations": [
 		{
-			"new_sqlite_classes": [
-				"MyDurableObject"
-			],
+			"new_sqlite_classes": ["ContainerOrchestrator"],
 			"tag": "v1"
 		}
 	],
@@ -22,8 +20,8 @@
 	"durable_objects": {
 		"bindings": [
 			{
-				"class_name": "MyDurableObject",
-				"name": "MY_DURABLE_OBJECT"
+				"class_name": "ContainerOrchestrator",
+				"name": "CONTAINER_ORCHESTRATOR"
 			}
 		]
 	},
