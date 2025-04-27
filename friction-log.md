@@ -16,3 +16,6 @@ I think this should be npx wrangler types
 - Plain vanilla project tells me stuff is out of date - means template is out of date?
 - "Wrong number of parameter bindings for SQL query."
 Need to destruct array - no example in docs; AI got this wrong and I did not spot in docs
+- Type 'ContainerState' does not satisfy the constraint 'Record<string, SqlStorageValue>'.
+  Index signature for type 'string' is missing in type 'ContainerState'.
+sql.exec<T> throw this

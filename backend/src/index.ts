@@ -177,7 +177,12 @@ export class ContainerOrchestrator extends DurableObject {
 	}
 
 	private async broadcastEvent(event: Event) {
-		const message = JSON.stringify(event);
+		const status = await this.getStatus();
+		const message = JSON.stringify({
+			type: event.type,
+			event: event,
+			status: status,
+		});
 		for (const ws of this.ctx.getWebSockets()) {
 			try {
 				ws.send(message);
@@ -240,7 +245,7 @@ export class ContainerOrchestrator extends DurableObject {
 		});
 
 		// Maintain pool size
-		await this.maintainPool();
+		this.maintainPool();
 
 		return newContainer;
 	}
@@ -322,6 +327,7 @@ export class ContainerOrchestrator extends DurableObject {
 				ws.send(JSON.stringify({ type: 'status', data: status }));
 			}
 		} catch (e) {
+			console.error('Error parsing message', e);
 			// Handle invalid messages
 		}
 	}
@@ -369,7 +375,8 @@ export class ContainerOrchestrator extends DurableObject {
 		}
 
 		if (path === '/ws') {
-			const { 0: client, 1: server } = new WebSocketPair();
+			const webSocketPair = new WebSocketPair();
+			const [client, server] = Object.values(webSocketPair);
 
 			// Accept the WebSocket connection and enable hibernation
 			this.ctx.acceptWebSocket(server);
@@ -412,6 +419,10 @@ export default {
 		const id = env.CONTAINER_ORCHESTRATOR.idFromName('main');
 		const stub = env.CONTAINER_ORCHESTRATOR.get(id);
 		const response = await stub.fetch(request);
+
+		if (request.url.includes('/ws')) {
+			return response;
+		}
 
 		// Add CORS headers to the response
 		const newHeaders = new Headers(response.headers);
