@@ -26,9 +26,7 @@ export class LovContainer extends Container {
 		super(ctx, env);
 	}
 
-	onStop(): void | Promise<void> {
-		
-	}
+	onStop(): void | Promise<void> {}
 
 	async fetch(request: Request): Promise<Response> {
 		if (request.url.endsWith('/kill')) {
@@ -85,19 +83,23 @@ export class ContainerOrchestrator extends DurableObject {
 			INSERT OR IGNORE INTO pool_config (key, value) VALUES 
 				('min_size', 2),
 				('max_size', 10),
-				('current_size', 0);
+				('current_size', 0),
+				('buffer_size', 2);
 		`);
 	}
 
 	private async initializePool() {
 		// Check if we need to create initial containers
+		const bufferSize = await this.ctx.storage.sql.exec<{ value: number }>(`SELECT value FROM pool_config WHERE key = 'buffer_size'`).one()
+			.value;
+
 		const idleCount = await this.ctx.storage.sql
 			.exec<{ count: number }>(`SELECT COUNT(*) as count FROM containers WHERE project_id IS NULL`)
 			.one().count;
 
-		if (idleCount < 2) {
+		if (idleCount < bufferSize) {
 			// Create containers to reach minimum pool size
-			const toCreate = 2 - idleCount;
+			const toCreate = bufferSize - idleCount;
 			for (let i = 0; i < toCreate; i++) {
 				try {
 					await this.createContainer();
@@ -152,22 +154,25 @@ export class ContainerOrchestrator extends DurableObject {
 	}
 
 	private async shutdownExcessContainers() {
+		const bufferSize = await this.ctx.storage.sql.exec<{ value: number }>(`SELECT value FROM pool_config WHERE key = 'buffer_size'`).one()
+			.value;
+
 		const idleContainers = await this.ctx.storage.sql
 			.exec<{ id: string }>(`SELECT id FROM containers WHERE project_id IS NULL ORDER BY created_at ASC`)
 			.toArray();
 
-		if (idleContainers.length > 2) {
-			const excessCount = idleContainers.length - 2;
+		if (idleContainers.length > bufferSize) {
+			const excessCount = idleContainers.length - bufferSize;
 			const containersToShutdown = idleContainers.slice(0, excessCount);
 
 			for (const container of containersToShutdown) {
 				const id = this.env.LOVING_CONTAINER.idFromName(container.id);
 				const stub = this.env.LOVING_CONTAINER.get(id);
-				// dummy request to killthe container
+				// dummy request to kill the container
 				const response = await stub.fetch(new Request('http://localhost/kill'));
 				console.log('response', response);
 
-				await this.ctx.storage.sql.exec(`DELETE FROM containers WHERE id = ?`, ...[container.id]);
+				await this.ctx.storage.sql.exec(`DELETE FROM containers WHERE id = ?`, container.id);
 
 				await this.logEvent({
 					type: 'container_shutdown',
@@ -177,18 +182,21 @@ export class ContainerOrchestrator extends DurableObject {
 				});
 			}
 
-			await this.ctx.storage.sql.exec(`UPDATE pool_config SET value = value - ? WHERE key = 'current_size'`, ...[excessCount]);
+			await this.ctx.storage.sql.exec(`UPDATE pool_config SET value = value - ? WHERE key = 'current_size'`, excessCount);
 		}
 	}
 
 	private async maintainPool() {
+		const bufferSize = await this.ctx.storage.sql.exec<{ value: number }>(`SELECT value FROM pool_config WHERE key = 'buffer_size'`).one()
+			.value;
+
 		const idleContainers = await this.ctx.storage.sql
 			.exec<{ count: number }>(`SELECT COUNT(*) as count FROM containers WHERE project_id IS NULL`)
 			.one().count;
 
-		if (idleContainers < 2) {
-			// Create containers to maintain minimum pool size
-			const toCreate = 2 - idleContainers;
+		if (idleContainers < bufferSize) {
+			// Create containers to maintain minimum buffer size
+			const toCreate = bufferSize - idleContainers;
 			for (let i = 0; i < toCreate; i++) {
 				try {
 					await this.createContainer();
@@ -196,7 +204,7 @@ export class ContainerOrchestrator extends DurableObject {
 					console.error('Error creating container', e);
 				}
 			}
-		} else if (idleContainers > 2) {
+		} else if (idleContainers > bufferSize) {
 			// Shutdown excess containers
 			await this.shutdownExcessContainers();
 		}
@@ -210,11 +218,22 @@ export class ContainerOrchestrator extends DurableObject {
 	}
 
 	async allocateContainer(projectId: string): Promise<ContainerState | null> {
-		// Find an available container
-		const containers = this.ctx.storage.sql.exec<ContainerState>(`SELECT * FROM containers WHERE project_id IS NULL LIMIT 1`).toArray();
+		// First check if a container for this project already exists
+		const existingContainer = await this.ctx.storage.sql
+			.exec<ContainerState>(`SELECT * FROM containers WHERE project_id = ? LIMIT 1`, ...[projectId])
+			.one();
 
-		console.log('container', containers.length);
-		console.log('projectId', projectId);
+		if (existingContainer) {
+			return existingContainer;
+		}
+
+		// Find an available container
+		const containers = await this.ctx.storage.sql
+			.exec<ContainerState>(`SELECT * FROM containers WHERE project_id IS NULL LIMIT 1`)
+			.toArray();
+
+		console.log('available containers:', containers.length);
+		console.log('projectId:', projectId);
 
 		let containerData: ContainerState;
 
@@ -231,10 +250,10 @@ export class ContainerOrchestrator extends DurableObject {
 			containerData = containers[0];
 		}
 
-		console.log('containerData', containerData);
+		console.log('containerData:', containerData);
 
 		// Update container with project
-		const result = await this.ctx.storage.sql.exec(
+		await this.ctx.storage.sql.exec(
 			`UPDATE containers SET project_id = ?, last_activity = ? WHERE id = ?`,
 			...[projectId, Date.now(), containerData.id]
 		);
@@ -283,7 +302,7 @@ export class ContainerOrchestrator extends DurableObject {
 
 	async getStatus(): Promise<{
 		containers: ContainerState[];
-		poolConfig: { minSize: number; maxSize: number; currentSize: number };
+		poolConfig: { minSize: number; maxSize: number; currentSize: number; bufferSize: number };
 	}> {
 		const containers = this.ctx.storage.sql.exec<ContainerState>(`SELECT * FROM containers`).toArray();
 
@@ -303,6 +322,7 @@ export class ContainerOrchestrator extends DurableObject {
 				minSize: poolConfig['min_size'] ?? 2,
 				maxSize: poolConfig['max_size'] ?? 10,
 				currentSize: poolConfig['current_size'] ?? 0,
+				bufferSize: poolConfig['buffer_size'] ?? 2,
 			},
 		};
 	}
@@ -314,9 +334,48 @@ export class ContainerOrchestrator extends DurableObject {
 
 	async getContainerIdByProjectId(projectId: string): Promise<string | null> {
 		const container = await this.ctx.storage.sql
-			.exec<ContainerState>(`SELECT * FROM containers WHERE project_id = ?`, ...[projectId])
+			.exec<ContainerState>(`SELECT * FROM containers WHERE project_id = ? LIMIT 1`, ...[projectId])
 			.one();
 		return container?.id ?? null;
+	}
+
+	private async updatePoolConfig(config: { minSize?: number; maxSize?: number; bufferSize?: number }): Promise<void> {
+		const updates = [];
+		const params = [];
+
+		if (config.minSize !== undefined) {
+			updates.push("UPDATE pool_config SET value = ? WHERE key = 'min_size'");
+			params.push(config.minSize);
+		}
+
+		if (config.maxSize !== undefined) {
+			updates.push("UPDATE pool_config SET value = ? WHERE key = 'max_size'");
+			params.push(config.maxSize);
+		}
+
+		if (config.bufferSize !== undefined) {
+			// Add or update buffer_size in pool_config
+			await this.ctx.storage.sql.exec(`INSERT OR REPLACE INTO pool_config (key, value) VALUES ('buffer_size', ?)`, config.bufferSize);
+		}
+
+		// Execute all updates
+		for (let i = 0; i < updates.length; i++) {
+			await this.ctx.storage.sql.exec(updates[i], params[i]);
+		}
+
+		// Log the configuration change
+		await this.logEvent({
+			type: 'pool_size_changed',
+			containerId: 'system',
+			timestamp: Date.now(),
+			details: JSON.stringify({
+				action: 'config_updated',
+				changes: config,
+			}),
+		});
+
+		// Maintain pool based on new configuration
+		await this.maintainPool();
 	}
 
 	async fetch(request: Request): Promise<Response> {
@@ -356,6 +415,22 @@ export class ContainerOrchestrator extends DurableObject {
 		if (path === '/reset') {
 			await this.resetContainers();
 			return new Response(null, { status: 204 });
+		}
+
+		if (path === '/config' && request.method === 'PUT') {
+			try {
+				const body = (await request.json()) as { minSize?: number; maxSize?: number; bufferSize?: number };
+				await this.updatePoolConfig(body);
+				const status = await this.getStatus();
+				return new Response(JSON.stringify(status), {
+					headers: { 'Content-Type': 'application/json' },
+				});
+			} catch (error) {
+				return new Response(JSON.stringify({ error: 'Invalid configuration' }), {
+					headers: { 'Content-Type': 'application/json' },
+					status: 400,
+				});
+			}
 		}
 
 		return new Response('Not found', { status: 404 });
