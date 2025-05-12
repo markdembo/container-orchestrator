@@ -1,5 +1,5 @@
 import { Container } from 'cf-containers';
-import { DurableObject } from 'cloudflare:workers';
+import { DurableObject, env } from 'cloudflare:workers';
 
 interface ContainerState extends Record<string, SqlStorageValue> {
 	id: string;
@@ -21,6 +21,23 @@ export class LovContainer extends Container {
 	// Configure default port for the container
 	defaultPort = 5000;
 	sleepAfter = '5m';
+
+	constructor(ctx: DurableObjectState, env: Env) {
+		super(ctx, env);
+	}
+
+	async fetch(request: Request): Promise<Response> {
+		if (request.url.endsWith('/kill')) {
+			this.stop('Pool management');
+			return new Response('Killed', { status: 200 });
+		}
+		if (request.url.endsWith('/start')) {
+			this.startAndWaitForPorts([5000]);
+			return new Response('Started', { status: 200 });
+		}
+		// Default implementation proxies requests to the container
+		return await this.containerFetch(request);
+	}
 }
 
 interface Env {
@@ -30,10 +47,13 @@ interface Env {
 }
 
 export class ContainerOrchestrator extends DurableObject {
+	protected env: Env;
+
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env);
 		this.initializeSchema();
 		this.initializePool();
+		this.env = env;
 	}
 
 	private async initializeSchema() {
@@ -98,28 +118,30 @@ export class ContainerOrchestrator extends DurableObject {
 		}
 
 		// Simulate container creation delay
-		await new Promise((resolve) => setTimeout(resolve, 2000 + Math.random() * 5000));
-
-		const id = crypto.randomUUID();
+		const containerId = this.env.LOV_CONTAINER.newUniqueId();
+		const stub = this.env.LOV_CONTAINER.get(containerId);
+		// dummy request to wake up the container
+		const response = await stub.fetch(new Request('/start'));
+		console.log('response', response);
 		const now = Date.now();
 
 		await this.ctx.storage.sql.exec(
 			`INSERT INTO containers (id, project_id, created_at, last_activity) 
 			 VALUES (?, ?, ?, ?)`,
-			...[id, null, now, now]
+			...[containerId.toString(), null, now, now]
 		);
 
 		await this.ctx.storage.sql.exec(`UPDATE pool_config SET value = value + 1 WHERE key = 'current_size'`);
 
 		await this.logEvent({
 			type: 'container_created',
-			containerId: id,
+			containerId: containerId.toString(),
 			timestamp: now,
 			details: JSON.stringify({}),
 		});
 
 		return {
-			id,
+			id: containerId.toString(),
 			projectId: null,
 			createdAt: now,
 			lastActivity: now,
@@ -136,6 +158,11 @@ export class ContainerOrchestrator extends DurableObject {
 			const containersToShutdown = idleContainers.slice(0, excessCount);
 
 			for (const container of containersToShutdown) {
+				const id = this.env.LOV_CONTAINER.idFromName(container.id);
+				const stub = this.env.LOV_CONTAINER.get(id);
+				const response = await stub.fetch(new Request('/kill'));
+				console.log('response', response);
+
 				await this.ctx.storage.sql.exec(`DELETE FROM containers WHERE id = ?`, ...[container.id]);
 
 				await this.logEvent({
