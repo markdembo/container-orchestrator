@@ -25,6 +25,7 @@ export class LovContainer extends Container {
 
 interface Env {
 	CONTAINER_ORCHESTRATOR: DurableObjectNamespace<ContainerOrchestrator>;
+	//@ts-expect-error type error
 	LOV_CONTAINER: DurableObjectNamespace<LovContainer>;
 }
 
