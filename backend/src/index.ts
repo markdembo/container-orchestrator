@@ -26,11 +26,16 @@ export class LovContainer extends Container {
 		super(ctx, env);
 	}
 
-	onStop(): void | Promise<void> {}
+	onStop(): void | Promise<void> {
+
+		// This is called when the container is stopped
+		// You can add any cleanup logic here
+		console.log('Container stopped yo');
+	}
 
 	async fetch(request: Request): Promise<Response> {
 		if (request.url.endsWith('/kill')) {
-			this.stop('Pool management');
+			this.stopContainer('Pool management');
 			return new Response('Killed', { status: 200 });
 		}
 		if (request.url.endsWith('/start')) {
@@ -170,7 +175,7 @@ export class ContainerOrchestrator extends DurableObject {
 				const stub = this.env.LOVING_CONTAINER.get(id);
 				// dummy request to kill the container
 				const response = await stub.fetch(new Request('http://localhost/kill'));
-				console.log('response', response);
+				console.log('response', response.status);
 
 				await this.ctx.storage.sql.exec(`DELETE FROM containers WHERE id = ?`, container.id);
 
@@ -219,9 +224,15 @@ export class ContainerOrchestrator extends DurableObject {
 
 	async allocateContainer(projectId: string): Promise<ContainerState | null> {
 		// First check if a container for this project already exists
-		const existingContainer = await this.ctx.storage.sql
+		let existingContainer: ContainerState | null = null;
+		try {
+			existingContainer = await this.ctx.storage.sql
 			.exec<ContainerState>(`SELECT * FROM containers WHERE project_id = ? LIMIT 1`, ...[projectId])
 			.one();
+		} catch (error) {
+			console.error('Error fetching existing container', error);
+		}
+
 
 		if (existingContainer) {
 			return existingContainer;
@@ -283,8 +294,8 @@ export class ContainerOrchestrator extends DurableObject {
 		for (const container of containers) {
 			const id = this.env.LOVING_CONTAINER.idFromName(container.id);
 			const stub = this.env.LOVING_CONTAINER.get(id);
-			const response = await stub.fetch(new Request('http:localhost/kill'));
-			console.log('response', response);
+			const response = await stub.fetch(new Request('http://localhost/kill'));
+			console.log('response', response.status);
 		}
 		await this.ctx.storage.sql.exec(`DELETE FROM containers`);
 		await this.ctx.storage.sql.exec(`UPDATE pool_config SET value = 0 WHERE key = 'current_size'`);
@@ -329,7 +340,7 @@ export class ContainerOrchestrator extends DurableObject {
 
 	async getLogs(): Promise<string> {
 		const logs = await this.ctx.storage.sql.exec(`SELECT * FROM events`).toArray();
-		return logs.map((log) => log.message).join('\n');
+		return logs.map((log) => JSON.stringify(log)).join('\n');
 	}
 
 	async getContainerIdByProjectId(projectId: string): Promise<string | null> {

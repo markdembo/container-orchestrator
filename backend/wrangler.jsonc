@@ -35,7 +35,7 @@
 		{
 			"class_name": "LovContainer",
 			"image": "./../container/Dockerfile",
-			"max_instances": 10,
+			"max_instances": 50,
 			"name": "loving-container",
 			"configuration": {
 					"vcpu": 1,

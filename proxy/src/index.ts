@@ -9,7 +9,13 @@ export default {
 		// This part can be cached in the future
 		const id = env.CONTAINER_ORCHESTRATOR.idFromName('main');
 		const stub = env.CONTAINER_ORCHESTRATOR.get(id);
-		const containerId = await stub.getContainerIdByProjectId(projectId);
+		let containerId: string | null | undefined = null;
+		try {
+			containerId = await stub.getContainerIdByProjectId(projectId);
+			
+		} catch (error) {
+			
+		}
 
 		if (!containerId) {
 			return new Response('No container found for project', { status: 404 });
