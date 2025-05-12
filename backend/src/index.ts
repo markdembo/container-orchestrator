@@ -26,6 +26,10 @@ export class LovContainer extends Container {
 		super(ctx, env);
 	}
 
+	onStop(): void | Promise<void> {
+		
+	}
+
 	async fetch(request: Request): Promise<Response> {
 		if (request.url.endsWith('/kill')) {
 			this.stop('Pool management');
@@ -43,7 +47,7 @@ export class LovContainer extends Container {
 interface Env {
 	CONTAINER_ORCHESTRATOR: DurableObjectNamespace<ContainerOrchestrator>;
 	//@ts-expect-error type error
-	LOV_CONTAINER: DurableObjectNamespace<LovContainer>;
+	LOVING_CONTAINER: DurableObjectNamespace<LovContainer>;
 }
 
 export class ContainerOrchestrator extends DurableObject {
@@ -117,11 +121,10 @@ export class ContainerOrchestrator extends DurableObject {
 			throw new Error(`Cannot create container: pool size limit (${maxSize}) reached`);
 		}
 
-		// Simulate container creation delay
-		const containerId = this.env.LOV_CONTAINER.newUniqueId();
-		const stub = this.env.LOV_CONTAINER.get(containerId);
+		const containerId = this.env.LOVING_CONTAINER.newUniqueId();
+		const stub = this.env.LOVING_CONTAINER.get(containerId);
 		// dummy request to wake up the container
-		const response = await stub.fetch(new Request('/start'));
+		const response = await stub.fetch(new Request('http://localhost/start'));
 		console.log('response', response);
 		const now = Date.now();
 
@@ -158,9 +161,10 @@ export class ContainerOrchestrator extends DurableObject {
 			const containersToShutdown = idleContainers.slice(0, excessCount);
 
 			for (const container of containersToShutdown) {
-				const id = this.env.LOV_CONTAINER.idFromName(container.id);
-				const stub = this.env.LOV_CONTAINER.get(id);
-				const response = await stub.fetch(new Request('/kill'));
+				const id = this.env.LOVING_CONTAINER.idFromName(container.id);
+				const stub = this.env.LOVING_CONTAINER.get(id);
+				// dummy request to killthe container
+				const response = await stub.fetch(new Request('http://localhost/kill'));
 				console.log('response', response);
 
 				await this.ctx.storage.sql.exec(`DELETE FROM containers WHERE id = ?`, ...[container.id]);
@@ -258,9 +262,9 @@ export class ContainerOrchestrator extends DurableObject {
 		// Get all containers, iterate over them and call kill them
 		const containers = await this.ctx.storage.sql.exec<ContainerState>(`SELECT * FROM containers`).toArray();
 		for (const container of containers) {
-			const id = this.env.LOV_CONTAINER.idFromName(container.id);
-			const stub = this.env.LOV_CONTAINER.get(id);
-			const response = await stub.fetch(new Request('/kill'));
+			const id = this.env.LOVING_CONTAINER.idFromName(container.id);
+			const stub = this.env.LOVING_CONTAINER.get(id);
+			const response = await stub.fetch(new Request('http:localhost/kill'));
 			console.log('response', response);
 		}
 		await this.ctx.storage.sql.exec(`DELETE FROM containers`);
@@ -304,7 +308,7 @@ export class ContainerOrchestrator extends DurableObject {
 	}
 
 	async getLogs(): Promise<string> {
-		const logs = await this.ctx.storage.sql.exec(`SELECT * FROM logs`).toArray();
+		const logs = await this.ctx.storage.sql.exec(`SELECT * FROM events`).toArray();
 		return logs.map((log) => log.message).join('\n');
 	}
 
@@ -349,7 +353,7 @@ export class ContainerOrchestrator extends DurableObject {
 			});
 		}
 
-		if (path === '/reset' && request.method === 'POST') {
+		if (path === '/reset') {
 			await this.resetContainers();
 			return new Response(null, { status: 204 });
 		}

@@ -7,12 +7,6 @@
 	"name": "proxy",
 	"main": "src/index.ts",
 	"compatibility_date": "2025-05-10",
-	"migrations": [
-		{
-			"new_sqlite_classes": ["ContainerOrchestrator", "LovContainer"],
-			"tag": "v1"
-		}
-	],
 	"durable_objects": {
 		"bindings": [
 			{
