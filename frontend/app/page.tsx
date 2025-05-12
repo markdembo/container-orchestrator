@@ -10,11 +10,9 @@ import { toast } from "sonner";
 
 interface ContainerState {
   id: string;
-  session_id: string | null;
-  ipv6_address: string;
-  health: boolean;
-  created_at: number;
-  last_activity: number;
+  projectId: string | null;
+  createdAt: number;
+  lastActivity: number;
 }
 
 interface PoolConfig {
@@ -34,10 +32,6 @@ interface Event {
   timestamp: number;
   details: string;
   allocationTime?: number; // Time in milliseconds
-}
-
-interface AllocationResponse {
-  containerId: string;
 }
 
 export default function Home() {
@@ -101,10 +95,10 @@ export default function Home() {
       const response = await fetch("http://localhost:8787/allocate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId: crypto.randomUUID() }),
+        body: JSON.stringify({ projectId: crypto.randomUUID() }),
       });
       if (!response.ok) throw new Error("Failed to allocate container");
-      const data = (await response.json()) as AllocationResponse;
+      const data = (await response.json()) as ContainerState;
       const endTime = Date.now();
       const allocationTime = endTime - startTime;
 
@@ -112,7 +106,7 @@ export default function Home() {
       setEvents((prev) => [
         {
           type: "container_allocated",
-          containerId: data.containerId,
+          containerId: data.id,
           timestamp: endTime,
           details: `Container allocated successfully`,
           allocationTime: allocationTime,
@@ -194,7 +188,7 @@ export default function Home() {
                   <div className="flex justify-between">
                     <span>Available Containers:</span>
                     <span className="font-bold">
-                      {status?.containers.filter((c) => !c.session_id).length}
+                      {status?.containers.filter((c) => !c.projectId).length}
                     </span>
                   </div>
                   <div className="flex justify-between">
@@ -230,15 +224,13 @@ export default function Home() {
               <CardContent>
                 <div className="space-y-2">
                   <div className="flex justify-between">
-                    <span>Healthy Containers:</span>
-                    <span className="font-bold">
-                      {status?.containers.filter((c) => c.health).length}
-                    </span>
+                    <span>Current Size:</span>
+                    <span className="font-bold">{status?.poolConfig.currentSize}</span>
                   </div>
                   <div className="flex justify-between">
-                    <span>Unhealthy Containers:</span>
+                    <span>Allocated Containers:</span>
                     <span className="font-bold">
-                      {status?.containers.filter((c) => !c.health).length}
+                      {status?.containers.filter((c) => c.projectId).length}
                     </span>
                   </div>
                 </div>
@@ -257,11 +249,10 @@ export default function Home() {
                     <tr className="border-b">
                       <th className="text-left p-2">ID</th>
                       <th className="text-left p-2">Status</th>
-                      <th className="text-left p-2">IPv6 Address</th>
                       <th className="text-left p-2">Created</th>
                       <th className="text-left p-2">Last Activity</th>
                       <th className="text-left p-2">Actions</th>
-                      <th className="text-left p-2">Session ID</th>
+                      <th className="text-left p-2">Project ID</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -269,17 +260,14 @@ export default function Home() {
                       <tr key={container.id} className="border-b">
                         <td className="p-2 font-mono text-sm">{container.id}</td>
                         <td className="p-2">
-                          <Badge variant={container.health ? "success" : "destructive"}>
-                            {container.health ? "Healthy" : "Unhealthy"}
+                          <Badge variant={container.projectId ? "outline" : "success"}>
+                            {container.projectId ? "Allocated" : "Available"}
                           </Badge>
                         </td>
-                        <td className="p-2 font-mono text-sm">{container.ipv6_address}</td>
-                        <td className="p-2">{new Date(container.created_at).toLocaleString()}</td>
+                        <td className="p-2">{new Date(container.createdAt).toLocaleString()}</td>
+                        <td className="p-2">{new Date(container.lastActivity).toLocaleString()}</td>
                         <td className="p-2">
-                          {new Date(container.last_activity).toLocaleString()}
-                        </td>
-                        <td className="p-2">
-                          {container.session_id && (
+                          {container.projectId && (
                             <Button
                               variant="destructive"
                               size="sm"
@@ -289,7 +277,7 @@ export default function Home() {
                             </Button>
                           )}
                         </td>
-                        <td className="p-2 font-mono text-sm">{container.session_id}</td>
+                        <td className="p-2 font-mono text-sm">{container.projectId || "-"}</td>
                       </tr>
                     ))}
                   </tbody>
