@@ -7,16 +7,13 @@
 	"name": "container-orchestrator",
 	"main": "src/index.ts",
 	"compatibility_date": "2025-04-26",
+	"account_id": "22c98cbfd8d562c6939f5e839d3a1ea3",
 	"migrations": [
 		{
 			"new_sqlite_classes": ["ContainerOrchestrator"],
 			"tag": "v1"
 		}
 	],
-	"assets": {
-		"binding": "ASSETS",
-		"directory": "./public"
-	},
 	"durable_objects": {
 		"bindings": [
 			{
@@ -25,6 +22,14 @@
 			}
 		]
 	},
+	"containers": [
+		{
+			"class_name": "LovContainer",
+			"image": "./../container/.Dockerfile",
+			"max_instances": 10,
+			"name": "loving-container"
+		}
+	],
 	"observability": {
 		"enabled": true
 	}

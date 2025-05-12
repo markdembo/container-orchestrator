@@ -1,21 +1,14 @@
+import { Container } from 'cf-containers';
 import { DurableObject } from 'cloudflare:workers';
 
-interface ContainerState {
+interface ContainerState extends Record<string, SqlStorageValue> {
 	id: string;
-	sessionId: string | null;
-	ipv6Address: string;
-	health: boolean;
+	projectId: string | null;
 	createdAt: number;
 	lastActivity: number;
 }
 
-type EventType =
-	| 'container_created'
-	| 'container_allocated'
-	| 'container_deallocated'
-	| 'container_shutdown'
-	| 'container_health_changed'
-	| 'pool_size_changed';
+type EventType = 'container_created' | 'container_allocated' | 'container_deallocated' | 'container_shutdown' | 'pool_size_changed';
 
 interface Event {
 	type: EventType;
@@ -24,11 +17,17 @@ interface Event {
 	details: string;
 }
 
-interface Env {
-	CONTAINER_ORCHESTRATOR: DurableObjectNamespace;
+export class LovContainer extends Container {
+	// Configure default port for the container
+	defaultPort = 5000;
+	sleepAfter = '5m';
 }
 
-/** A Durable Object's behavior is defined in an exported Javascript class */
+interface Env {
+	CONTAINER_ORCHESTRATOR: DurableObjectNamespace<ContainerOrchestrator>;
+	LOV_CONTAINER: DurableObjectNamespace<LovContainer>;
+}
+
 export class ContainerOrchestrator extends DurableObject {
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env);
@@ -40,9 +39,7 @@ export class ContainerOrchestrator extends DurableObject {
 		await this.ctx.storage.sql.exec(`
 			CREATE TABLE IF NOT EXISTS containers (
 				id TEXT PRIMARY KEY,
-				session_id TEXT,
-				ipv6_address TEXT,
-				health BOOLEAN,
+				project_id TEXT,
 				created_at INTEGER,
 				last_activity INTEGER
 			);
@@ -70,7 +67,7 @@ export class ContainerOrchestrator extends DurableObject {
 	private async initializePool() {
 		// Check if we need to create initial containers
 		const idleCount = await this.ctx.storage.sql
-			.exec<{ count: number }>(`SELECT COUNT(*) as count FROM containers WHERE session_id IS NULL AND health = 'true'`)
+			.exec<{ count: number }>(`SELECT COUNT(*) as count FROM containers WHERE project_id IS NULL`)
 			.one().count;
 
 		if (idleCount < 2) {
@@ -103,13 +100,12 @@ export class ContainerOrchestrator extends DurableObject {
 		await new Promise((resolve) => setTimeout(resolve, 2000 + Math.random() * 5000));
 
 		const id = crypto.randomUUID();
-		const ipv6Address = `2001:db8::${id.slice(0, 8)}`;
 		const now = Date.now();
 
 		await this.ctx.storage.sql.exec(
-			`INSERT INTO containers (id, session_id, ipv6_address, health, created_at, last_activity) 
-			 VALUES (?, ?, ?, ?, ?, ?)`,
-			...[id, null, ipv6Address, true, now, now]
+			`INSERT INTO containers (id, project_id, created_at, last_activity) 
+			 VALUES (?, ?, ?, ?)`,
+			...[id, null, now, now]
 		);
 
 		await this.ctx.storage.sql.exec(`UPDATE pool_config SET value = value + 1 WHERE key = 'current_size'`);
@@ -118,14 +114,12 @@ export class ContainerOrchestrator extends DurableObject {
 			type: 'container_created',
 			containerId: id,
 			timestamp: now,
-			details: JSON.stringify({ ipv6Address }),
+			details: JSON.stringify({}),
 		});
 
 		return {
 			id,
-			sessionId: null,
-			ipv6Address,
-			health: true,
+			projectId: null,
 			createdAt: now,
 			lastActivity: now,
 		};
@@ -133,7 +127,7 @@ export class ContainerOrchestrator extends DurableObject {
 
 	private async shutdownExcessContainers() {
 		const idleContainers = await this.ctx.storage.sql
-			.exec<{ id: string }>(`SELECT id FROM containers WHERE session_id IS NULL AND health = 'true' ORDER BY created_at ASC`)
+			.exec<{ id: string }>(`SELECT id FROM containers WHERE project_id IS NULL ORDER BY created_at ASC`)
 			.toArray();
 
 		if (idleContainers.length > 2) {
@@ -157,7 +151,7 @@ export class ContainerOrchestrator extends DurableObject {
 
 	private async maintainPool() {
 		const idleContainers = await this.ctx.storage.sql
-			.exec<{ count: number }>(`SELECT COUNT(*) as count FROM containers WHERE session_id IS NULL AND health = 'true'`)
+			.exec<{ count: number }>(`SELECT COUNT(*) as count FROM containers WHERE project_id IS NULL`)
 			.one().count;
 
 		if (idleContainers < 2) {
@@ -200,14 +194,12 @@ export class ContainerOrchestrator extends DurableObject {
 		await this.broadcastEvent(event);
 	}
 
-	async allocateContainer(sessionId: string): Promise<ContainerState | null> {
+	async allocateContainer(projectId: string): Promise<ContainerState | null> {
 		// Find an available container
-		const containers = this.ctx.storage.sql
-			.exec<ContainerState>(`SELECT * FROM containers WHERE session_id IS NULL AND health = 'true' LIMIT 1`)
-			.toArray();
+		const containers = this.ctx.storage.sql.exec<ContainerState>(`SELECT * FROM containers WHERE project_id IS NULL LIMIT 1`).toArray();
 
 		console.log('container', containers.length);
-		console.log('sessionId', sessionId);
+		console.log('projectId', projectId);
 
 		let containerData: ContainerState;
 
@@ -226,10 +218,10 @@ export class ContainerOrchestrator extends DurableObject {
 
 		console.log('containerData', containerData);
 
-		// Update container with session
+		// Update container with project
 		const result = await this.ctx.storage.sql.exec(
-			`UPDATE containers SET session_id = ?, last_activity = ? WHERE id = ?`,
-			...[sessionId, Date.now(), containerData.id]
+			`UPDATE containers SET project_id = ?, last_activity = ? WHERE id = ?`,
+			...[projectId, Date.now(), containerData.id]
 		);
 
 		const newContainer = await this.ctx.storage.sql
@@ -241,7 +233,7 @@ export class ContainerOrchestrator extends DurableObject {
 			type: 'container_allocated',
 			containerId: containerData.id,
 			timestamp: Date.now(),
-			details: JSON.stringify({ sessionId }),
+			details: JSON.stringify({ projectId }),
 		});
 
 		// Maintain pool size
@@ -261,7 +253,7 @@ export class ContainerOrchestrator extends DurableObject {
 		const containerData = container.value as unknown as ContainerState;
 
 		await this.ctx.storage.sql.exec(
-			`UPDATE containers SET session_id = NULL, last_activity = ? WHERE id = ?`,
+			`UPDATE containers SET project_id = NULL, last_activity = ? WHERE id = ?`,
 			...[Date.now(), containerId]
 		);
 
@@ -269,7 +261,7 @@ export class ContainerOrchestrator extends DurableObject {
 			type: 'container_deallocated',
 			containerId,
 			timestamp: Date.now(),
-			details: JSON.stringify({ previousSessionId: containerData.sessionId }),
+			details: JSON.stringify({ previousProjectId: containerData.projectId }),
 		});
 
 		// Maintain pool size
@@ -349,8 +341,8 @@ export class ContainerOrchestrator extends DurableObject {
 
 		if (path === '/allocate' && request.method === 'POST') {
 			console.log('allocate');
-			const body = (await request.json()) as { sessionId: string };
-			const container = await this.allocateContainer(body.sessionId);
+			const body = (await request.json()) as { projectId: string };
+			const container = await this.allocateContainer(body.projectId);
 			console.log('container', container);
 			if (!container) {
 				return new Response(JSON.stringify({ error: 'No available containers' }), {
