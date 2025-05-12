@@ -198,11 +198,28 @@ export class ContainerOrchestrator extends DurableObject {
 		}
 	}
 
+	private async broadcastEvent(event: Event) {
+		const status = await this.getStatus();
+		const message = JSON.stringify({
+			type: event.type,
+			event: event,
+			status: status,
+		});
+		for (const ws of this.ctx.getWebSockets()) {
+			try {
+				ws.send(message);
+			} catch (e) {
+				// Handle failed sends
+			}
+		}
+	}
+
 	private async logEvent(event: Event) {
 		await this.ctx.storage.sql.exec(
 			`INSERT INTO events (type, container_id, timestamp, details) VALUES (?, ?, ?, ?)`,
 			...[event.type, event.containerId, event.timestamp, event.details]
 		);
+		await this.broadcastEvent(event);
 	}
 
 	async allocateContainer(projectId: string): Promise<ContainerState | null> {
@@ -253,16 +270,34 @@ export class ContainerOrchestrator extends DurableObject {
 		return newContainer;
 	}
 
+	async deallocateContainer(containerId: string): Promise<void> {
+		const containerCursor = await this.ctx.storage.sql.exec(`SELECT * FROM containers WHERE id = ?`, ...[containerId]);
+		const container = await containerCursor.next();
+
+		if (container.done) {
+			throw new Error('Container not found');
+		}
+
+		const containerData = container.value as unknown as ContainerState;
+
+		await this.ctx.storage.sql.exec(
+			`UPDATE containers SET project_id = NULL, last_activity = ? WHERE id = ?`,
+			...[Date.now(), containerId]
+		);
+
+		await this.logEvent({
+			type: 'container_deallocated',
+			containerId,
+			timestamp: Date.now(),
+			details: JSON.stringify({ previousProjectId: containerData.projectId }),
+		});
+
+		// Maintain pool size
+		await this.maintainPool();
+	}
+
 	private async resetContainers(): Promise<void> {
 		// Delete all containers
-		// Get all containers, iterate over them and call kill them
-		const containers = await this.ctx.storage.sql.exec<ContainerState>(`SELECT * FROM containers`).toArray();
-		for (const container of containers) {
-			const id = this.env.LOV_CONTAINER.idFromName(container.id);
-			const stub = this.env.LOV_CONTAINER.get(id);
-			const response = await stub.fetch(new Request('/kill'));
-			console.log('response', response);
-		}
 		await this.ctx.storage.sql.exec(`DELETE FROM containers`);
 		await this.ctx.storage.sql.exec(`UPDATE pool_config SET value = 0 WHERE key = 'current_size'`);
 		// Log the reset event
@@ -303,16 +338,22 @@ export class ContainerOrchestrator extends DurableObject {
 		};
 	}
 
-	async getLogs(): Promise<string> {
-		const logs = await this.ctx.storage.sql.exec(`SELECT * FROM logs`).toArray();
-		return logs.map((log) => log.message).join('\n');
+	async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer) {
+		try {
+			const data = JSON.parse(message as string);
+			if (data.type === 'subscribe') {
+				// Send current status
+				const status = await this.getStatus();
+				ws.send(JSON.stringify({ type: 'status', data: status }));
+			}
+		} catch (e) {
+			console.error('Error parsing message', e);
+			// Handle invalid messages
+		}
 	}
 
-	async getContainerIdByProjectId(projectId: string): Promise<string | null> {
-		const container = await this.ctx.storage.sql
-			.exec<ContainerState>(`SELECT * FROM containers WHERE project_id = ?`, ...[projectId])
-			.one();
-		return container?.id ?? null;
+	async webSocketClose(ws: WebSocket, code: number, reason: string, wasClean: boolean) {
+		// Clean up if needed
 	}
 
 	async fetch(request: Request): Promise<Response> {
@@ -322,13 +363,6 @@ export class ContainerOrchestrator extends DurableObject {
 		if (path === '/status') {
 			const status = await this.getStatus();
 			return new Response(JSON.stringify(status), {
-				headers: { 'Content-Type': 'application/json' },
-			});
-		}
-
-		if (path === '/logs') {
-			const logs = await this.getLogs();
-			return new Response(JSON.stringify(logs), {
 				headers: { 'Content-Type': 'application/json' },
 			});
 		}
@@ -349,9 +383,28 @@ export class ContainerOrchestrator extends DurableObject {
 			});
 		}
 
+		if (path.startsWith('/deallocate/')) {
+			const containerId = path.split('/')[2];
+			await this.deallocateContainer(containerId);
+			return new Response(null, { status: 204 });
+		}
+
 		if (path === '/reset' && request.method === 'POST') {
 			await this.resetContainers();
 			return new Response(null, { status: 204 });
+		}
+
+		if (path === '/ws') {
+			const webSocketPair = new WebSocketPair();
+			const [client, server] = Object.values(webSocketPair);
+
+			// Accept the WebSocket connection and enable hibernation
+			this.ctx.acceptWebSocket(server);
+
+			return new Response(null, {
+				status: 101,
+				webSocket: client,
+			});
 		}
 
 		return new Response('Not found', { status: 404 });
@@ -386,6 +439,10 @@ export default {
 		const id = env.CONTAINER_ORCHESTRATOR.idFromName('main');
 		const stub = env.CONTAINER_ORCHESTRATOR.get(id);
 		const response = await stub.fetch(request);
+
+		if (request.url.includes('/ws')) {
+			return response;
+		}
 
 		// Add CORS headers to the response
 		const newHeaders = new Headers(response.headers);
