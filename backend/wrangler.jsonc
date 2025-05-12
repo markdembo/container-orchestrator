@@ -6,12 +6,17 @@
 	"$schema": "node_modules/wrangler/config-schema.json",
 	"name": "container-orchestrator",
 	"main": "src/index.ts",
-	"compatibility_date": "2025-04-26",
+	"compatibility_date": "2025-05-06",
 	"account_id": "22c98cbfd8d562c6939f5e839d3a1ea3",
+	"compatibility_flags": ["nodejs_compat"],
 	"migrations": [
 		{
 			"new_sqlite_classes": ["ContainerOrchestrator"],
 			"tag": "v1"
+		},
+		{
+			"new_sqlite_classes": ["LovContainer"],
+			"tag": "v2"
 		}
 	],
 	"durable_objects": {
@@ -19,15 +24,23 @@
 			{
 				"class_name": "ContainerOrchestrator",
 				"name": "CONTAINER_ORCHESTRATOR"
+			},
+			{
+				"class_name": "LovContainer",
+				"name": "LOVING_CONTAINER"
 			}
 		]
 	},
 	"containers": [
 		{
 			"class_name": "LovContainer",
-			"image": "./../container/.Dockerfile",
+			"image": "./../container/Dockerfile",
 			"max_instances": 10,
-			"name": "loving-container"
+			"name": "loving-container",
+			"configuration": {
+					"vcpu": 1,
+					"memory": "1GB"
+			}
 		}
 	],
 	"observability": {
